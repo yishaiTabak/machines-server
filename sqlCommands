@@ -1,0 +1,194 @@
+create database mydb
+
+create table users (
+Username varchar(50) primary key,
+FullName varchar(50) not null,
+Password varchar(50) not null
+);
+insert into Users values ('yishait', 'yishai tabak', 'a1')
+
+create table Manufacturer (
+ID serial primary key,
+manufacturer_name varchar(50) not null
+);
+insert into Manufacturer (name) values ('Arburg'), ('ABB')
+
+create table Machines (
+ID serial primary key,
+name varchar(50) not null,
+manufacturer_id int references Manufacturer(ID) not null,
+purchased_at timestamp not null,
+manufacture_year int not null,
+status bool not null,
+capacity numeric(3,2) not null
+)
+
+CREATE OR REPLACE FUNCTION get_manufacturers()
+RETURNS TABLE (like manufacturer)
+AS $$
+BEGIN
+    RETURN QUERY SELECT * FROM Manufacturer;
+END;
+$$
+LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION add_machine(
+	name varchar(50),
+	manufacturer_id int,
+	purchased_at timestamp,
+	manufacture_year int,
+	status boolean,
+	capacity numeric(3,2))
+returns void
+AS $$
+BEGIN
+    insert into machines (name,manufacturer_id,purchased_at,manufacture_year,status,capacity)
+	values (name,manufacturer_id,purchased_at,manufacture_year,status,capacity);
+END;
+$$
+LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE Function update_machine(
+    machine_id int,
+    new_name varchar(50) = null,
+    new_manufacturer_id int = null,
+    new_purchased_at timestamp = null,
+    new_manufacture_year int = null,
+    new_status boolean = null,
+    new_capacity numeric(3,2) = null)
+returns void
+AS $$
+BEGIN
+    UPDATE machines
+    SET
+        name = COALESCE(new_name, name),
+        manufacturer_id = COALESCE(new_manufacturer_id, manufacturer_id),
+        purchased_at = COALESCE(new_purchased_at, purchased_at),
+        manufacture_year = COALESCE(new_manufacture_year, manufacture_year),
+        status = COALESCE(new_status, status),
+        capacity = COALESCE(new_capacity, capacity)
+    WHERE id = machine_id;
+END;
+$$
+LANGUAGE plpgsql;
+
+CREATE OR REPLACE Function delete_machine(machine_id int)
+returns void
+AS $$
+BEGIN
+    delete from machines
+    WHERE id = machine_id;
+END;
+$$
+LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE Function get_user(_username varchar(50), _password varchar(50))
+returns table (like users)
+AS $$
+BEGIN
+    return query select * from users where username = _username and password = _password;
+END;
+$$
+LANGUAGE plpgsql;
+
+
+
+
+CREATE TYPE machine_result AS (
+    id INT,
+    name VARCHAR(50),
+    purchased_at timestamp,
+    manufacture_year int,
+    status boolean,
+    capacity numeric(3,2),
+    manufacturer_name VARCHAR(50)
+);
+
+
+CCREATE OR REPLACE FUNCTION get_machines(
+    sort_by varchar(20),
+    is_asc boolean,
+    limit_records int,
+    start_from int,
+    searched_id int,
+    searched_name varchar(50),
+    filter_manufacturers varchar[],
+    filter_status boolean)
+RETURNS setof machine_result
+AS $$
+declare total bigint;
+BEGIN
+SELECT count(*) into total
+        FROM machines 
+        LEFT JOIN manufacturer ON machines.manufacturer_id = manufacturer.id
+        WHERE machines.id = COALESCE(searched_id, machines.id) AND 
+              machines.name LIKE '%' || searched_name || '%' AND 
+              (manufacturer.manufacturer_name = ANY(filter_manufacturers) OR filter_manufacturers IS NULL) AND 
+              machines.status = COALESCE(filter_status, machines.status);
+    RETURN QUERY EXECUTE 
+        'SELECT machines.id, machines.name, machines.purchased_at, 
+                machines.manufacture_year, machines.status, machines.capacity, 
+                manufacturer.manufacturer_name
+        FROM machines 
+        LEFT JOIN manufacturer ON machines.manufacturer_id = manufacturer.id
+        WHERE machines.id = COALESCE($1, machines.id) AND 
+              machines.name LIKE $2 AND 
+              (manufacturer.manufacturer_name = ANY($4) OR $4 IS NULL) AND 
+              machines.status = COALESCE($3, machines.status)
+        ORDER BY ' || quote_ident(coalesce(sort_by, 'machines.id')) || ' ' || 
+        CASE WHEN is_asc THEN 'ASC' ELSE 'DESC' END || '
+        LIMIT $5 OFFSET $6'
+    USING searched_id, '%' || searched_name || '%', filter_status, filter_manufacturers, limit_records, start_from;
+	RETURN NEXT (total, null, null, null, null, null, null)::machine_result;
+END;
+$$
+LANGUAGE plpgsql;
+
+
+
+
+CREATE TABLE images (
+    machine_id INTEGER PRIMARY KEY REFERENCES machines(id),
+    image_data BYTEA);
+
+
+CREATE OR REPLACE Function upload_image(machine_id int, image_data bytea)
+returns void
+AS $$
+BEGIN
+    INSERT INTO images VALUES (machine_id, image_data);
+END;
+$$
+LANGUAGE plpgsql;
+
+CREATE OR REPLACE Function get_image(input_machine_id int)
+returns bytea
+AS $$
+BEGIN
+    return (SELECT image_data FROM images WHERE machine_id = input_machine_id);
+END;
+$$
+LANGUAGE plpgsql;
+
+CREATE OR REPLACE Function delete_image(id int)
+returns void
+AS $$
+BEGIN
+    delete from images where machine_id = id ;
+END;
+$$
+LANGUAGE plpgsql;
+
+
+INSERT INTO machines (name, manufacturer_id, purchased_at, manufacture_year, status, capacity)
+SELECT
+    'Machine ' || gs AS name,
+    (gs % 2) + 1 AS manufacturer_id,
+    NOW() - INTERVAL '1 year' * (gs % 7) AS purchased_at,
+    EXTRACT(YEAR FROM NOW() - INTERVAL '1 year' * (gs % 10)) AS manufacture_year,
+    CASE WHEN gs % 2 = 0 THEN true ELSE false END AS status,
+    RANDOM()  AS capacity
+FROM
+    GENERATE_SERIES(1, 100) gs;
